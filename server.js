@@ -1,48 +1,62 @@
+const express = require("express");
+const http = require("http");
 const WebSocket = require("ws");
-const port = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port });
 
-// Rooms map: roomId -> Set of sockets
-const rooms = new Map();
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+// rooms = { roomId: Set<WebSocket> }
+const rooms = {};
 
 wss.on("connection", (ws) => {
-  ws.on("message", (msg) => {
+  console.log("Client connected");
+
+  ws.on("message", (data) => {
+    let msg;
     try {
-      const data = JSON.parse(msg);
-      const { type, room, payload } = data;
-      if (!room) return;
-      if (!rooms.has(room)) rooms.set(room, new Set());
-
-      const clients = rooms.get(room);
-
-      if (type === "join") {
-        ws.room = room;
-        clients.add(ws);
-        // reply with current client count
-        ws.send(
-          JSON.stringify({ type: "joined", payload: { count: clients.size } })
-        );
-      } else if (type === "signal") {
-        // relay signaling payload to all other clients in the same room
-        for (const client of clients) {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({ type: "signal", payload }));
-          }
-        }
-      }
+      msg = JSON.parse(data.toString());
     } catch (e) {
-      console.error("Bad message", e);
+      return;
+    }
+
+    // user joining a room
+    if (msg.type === "join") {
+      const { room } = msg;
+      ws.room = room;
+
+      if (!rooms[room]) rooms[room] = new Set();
+      rooms[room].add(ws);
+
+      console.log(`Client joined room: ${room}`);
+      return;
+    }
+
+    // signal forwarding
+    if (msg.type === "signal" && ws.room) {
+      const room = rooms[ws.room];
+      if (!room) return;
+
+      // send to all other members in the room
+      room.forEach((client) => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(msg));
+        }
+      });
     }
   });
 
   ws.on("close", () => {
-    const room = ws.room;
-    if (!room) return;
-    const clients = rooms.get(room);
-    if (!clients) return;
-    clients.delete(ws);
-    if (clients.size === 0) rooms.delete(room);
+    if (ws.room && rooms[ws.room]) {
+      rooms[ws.room].delete(ws);
+      if (rooms[ws.room].size === 0) {
+        delete rooms[ws.room];
+      }
+    }
+    console.log("Client disconnected");
   });
 });
 
-console.log(`Signaling server running on ws://0.0.0.0:${port}`);
+server.listen(process.env.PORT || 8080, () => {
+  console.log("Server running on port", process.env.PORT || 8080);
+});
